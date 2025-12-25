@@ -23,6 +23,15 @@ Mini-apps are HTML/JavaScript applications that run inside the **Tapir Runtime**
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
+## Live Demo
+
+These mini-apps are hosted on GitHub Pages and can be loaded directly in Tapir Runtime:
+
+| App | URL |
+|-----|-----|
+| Pager | https://dioco-group.github.io/tapir-miniapps/pager.html |
+| Launcher | https://dioco-group.github.io/tapir-miniapps/launcher.html |
+
 ## Available Mini-Apps
 
 ### 🔔 Pager (`pager.html`)
@@ -211,6 +220,6 @@ MIT License - See [LICENSE](LICENSE)
 
 ## Links
 
+- [Tapir Runtime (React Native)](https://github.com/dioco-group/tapir-rn)
 - [Tapir Firmware](https://github.com/alnicko-lab/tapir-testing-fw)
-- [Tapir Runtime (React Native)](https://github.com/alnicko-lab/tapir-rn)
 
