@@ -13,20 +13,6 @@
       padding: 20px;
       min-height: 100vh;
     }
-    .terminal-preview {
-      background: #111;
-      border: 2px solid #333;
-      border-radius: 8px;
-      padding: 10px;
-      margin-bottom: 20px;
-    }
-    .terminal-preview pre {
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
-      line-height: 1.2;
-      white-space: pre;
-      color: #0f0;
-    }
     .grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -87,10 +73,6 @@
   </style>
 </head>
 <body>
-  <div class="terminal-preview">
-    <pre id="terminal">Loading...</pre>
-  </div>
-
   <div class="grid" id="appGrid"></div>
   
   <div class="system-row">
@@ -215,13 +197,6 @@
     function updateDeviceDisplay() {
       const currentBuffer = renderTerminal();
       
-      // Show preview in web UI
-      const lines = [];
-      for (let i = 0; i < ROWS; i++) {
-        lines.push(currentBuffer.slice(i * COLS, (i + 1) * COLS));
-      }
-      document.getElementById('terminal').textContent = lines.join('\n');
-      
       // Send to device/simulator if bridge available
       if (window.tapir && window.tapir.terminal) {
         // Only send if changed
@@ -249,14 +224,6 @@
     // Initialize
     function init() {
       renderWebGrid();
-      
-      // Show initial preview
-      const buffer = renderTerminal();
-      const lines = [];
-      for (let i = 0; i < ROWS; i++) {
-        lines.push(buffer.slice(i * COLS, (i + 1) * COLS));
-      }
-      document.getElementById('terminal').textContent = lines.join('\n');
       
       // Listen for button presses
       if (window.tapir) {
