@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tapir Launcher</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Courier New', monospace;
+      background: #000;
+      color: #0f0;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    .terminal-preview {
+      background: #111;
+      border: 2px solid #333;
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 20px;
+    }
+    .terminal-preview pre {
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      line-height: 1.2;
+      white-space: pre;
+      color: #0f0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      max-width: 400px;
+      margin: 20px auto;
+    }
+    .app-slot {
+      background: #222;
+      border: 2px solid #444;
+      border-radius: 8px;
+      padding: 15px 10px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .app-slot:hover {
+      background: #333;
+      border-color: #0f0;
+    }
+    .app-slot.selected {
+      background: #0a3;
+      border-color: #0f0;
+    }
+    .app-slot.disabled {
+      opacity: 0.4;
+    }
+    .app-icon {
+      font-size: 24px;
+      margin-bottom: 5px;
+    }
+    .app-name {
+      font-size: 12px;
+      color: #aaa;
+    }
+    .status {
+      text-align: center;
+      color: #666;
+      font-size: 12px;
+      margin-top: 20px;
+    }
+    .system-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      max-width: 400px;
+      margin: 10px auto;
+    }
+    .system-btn {
+      background: #333;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 8px;
+      text-align: center;
+      color: #888;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div class="terminal-preview">
+    <pre id="terminal">Loading...</pre>
+  </div>
+
+  <div class="grid" id="appGrid"></div>
+  
+  <div class="system-row">
+    <div class="system-btn">← Back</div>
+    <div class="system-btn">⌂ Home</div>
+    <div class="system-btn">☰ Menu</div>
+  </div>
+
+  <div class="status" id="status">Initializing...</div>
+
+  <script>
+    // Terminal dimensions
+    const COLS = 32;
+    const ROWS = 18;
+    
+    // App configurations (synced from native)
+    let apps = [
+      { id: 0, name: 'Pager', icon: '📟', enabled: true },
+      { id: 1, name: 'Clock', icon: '🕐', enabled: false },
+      { id: 2, name: 'Notes', icon: '📝', enabled: false },
+      { id: 3, name: 'Calc', icon: '🔢', enabled: false },
+      { id: 4, name: 'Timer', icon: '⏱️', enabled: false },
+      { id: 5, name: 'Snake', icon: '🐍', enabled: false },
+      { id: 6, name: 'Chat', icon: '💬', enabled: false },
+      { id: 7, name: 'Music', icon: '🎵', enabled: false },
+      { id: 8, name: 'Radio', icon: '📻', enabled: false },
+    ];
+    
+    let selectedSlot = 0;
+    let lastSentBuffer = '';
+    let updateIntervalId = null;
+    
+    // Render the app grid in the web UI
+    function renderWebGrid() {
+      const grid = document.getElementById('appGrid');
+      grid.innerHTML = '';
+      
+      apps.forEach((app, idx) => {
+        const slot = document.createElement('div');
+        slot.className = 'app-slot' + 
+          (idx === selectedSlot ? ' selected' : '') +
+          (!app.enabled ? ' disabled' : '');
+        slot.innerHTML = `
+          <div class="app-icon">${app.icon}</div>
+          <div class="app-name">${app.name}</div>
+        `;
+        slot.onclick = () => {
+          selectedSlot = idx;
+          renderWebGrid();
+          if (app.enabled && window.tapir) {
+            window.tapir.call('launcher.launch', { index: idx });
+          }
+        };
+        grid.appendChild(slot);
+      });
+    }
+    
+    // Render the terminal buffer for the device display
+    function renderTerminal() {
+      // Create buffer
+      let buffer = '';
+      
+      // Header row
+      const header = '═══ TAPIR LAUNCHER ═══';
+      const headerPadded = header.padStart(Math.floor((COLS + header.length) / 2)).padEnd(COLS);
+      buffer += headerPadded;
+      
+      // Empty row
+      buffer += ' '.repeat(COLS);
+      
+      // App grid (3 rows of 3 apps)
+      for (let row = 0; row < 3; row++) {
+        // Icon row
+        let iconLine = ' ';
+        for (let col = 0; col < 3; col++) {
+          const idx = row * 3 + col;
+          const app = apps[idx];
+          const isSelected = idx === selectedSlot;
+          const icon = app.enabled ? app.icon.slice(0, 2) : '  ';
+          const left = isSelected ? '[' : ' ';
+          const right = isSelected ? ']' : ' ';
+          // Each cell is ~10 chars wide
+          iconLine += left + icon.padEnd(2) + right + '    ';
+        }
+        buffer += iconLine.slice(0, COLS);
+        
+        // Name row
+        let nameLine = ' ';
+        for (let col = 0; col < 3; col++) {
+          const idx = row * 3 + col;
+          const app = apps[idx];
+          const name = app.enabled ? app.name.slice(0, 8) : '---';
+          nameLine += name.padEnd(10);
+        }
+        buffer += nameLine.slice(0, COLS);
+        
+        // Spacer between app rows
+        buffer += ' '.repeat(COLS);
+      }
+      
+      // Fill remaining rows
+      const usedRows = 2 + (3 * 3); // header + empty + 3 app sections
+      for (let i = usedRows; i < ROWS - 2; i++) {
+        buffer += ' '.repeat(COLS);
+      }
+      
+      // Footer with navigation hints
+      const footer1 = '──────────────────────────────';
+      buffer += footer1.slice(0, COLS).padEnd(COLS);
+      
+      const footer2 = '  [←Back]  [⌂Home]  [☰Menu]  ';
+      buffer += footer2.slice(0, COLS).padEnd(COLS);
+      
+      // Ensure exactly COLS * ROWS chars
+      buffer = buffer.slice(0, COLS * ROWS).padEnd(COLS * ROWS);
+      
+      return buffer;
+    }
+    
+    // Update the device display
+    function updateDeviceDisplay() {
+      if (!window.tapir || !window.tapir.isConnected || !window.tapir.isConnected()) {
+        document.getElementById('status').textContent = '🔴 Not connected to device';
+        return;
+      }
+      
+      const currentBuffer = renderTerminal();
+      
+      // Show preview
+      const lines = [];
+      for (let i = 0; i < ROWS; i++) {
+        lines.push(currentBuffer.slice(i * COLS, (i + 1) * COLS));
+      }
+      document.getElementById('terminal').textContent = lines.join('\n');
+      
+      // Only send if changed
+      if (currentBuffer !== lastSentBuffer) {
+        window.tapir.terminal(btoa(currentBuffer));
+        lastSentBuffer = currentBuffer;
+        document.getElementById('status').textContent = '✅ Display updated';
+      } else {
+        document.getElementById('status').textContent = '✓ Display in sync';
+      }
+    }
+    
+    // Initialize
+    function init() {
+      renderWebGrid();
+      
+      // Show initial preview
+      const buffer = renderTerminal();
+      const lines = [];
+      for (let i = 0; i < ROWS; i++) {
+        lines.push(buffer.slice(i * COLS, (i + 1) * COLS));
+      }
+      document.getElementById('terminal').textContent = lines.join('\n');
+      
+      // Listen for button presses
+      if (window.tapir) {
+        window.tapir.on('button', (data) => {
+          const { id, event } = data;
+          if (event !== 'down') return; // Only handle button down
+          
+          if (id >= 0 && id <= 8) {
+            selectedSlot = id;
+            renderWebGrid();
+            updateDeviceDisplay();
+            
+            // Launch if enabled
+            const app = apps[id];
+            if (app.enabled) {
+              window.tapir.call('launcher.launch', { index: id });
+            }
+          }
+        });
+        
+        // Start update loop when connected
+        window.tapir.on('connectionChange', (isConnected) => {
+          if (isConnected) {
+            updateDeviceDisplay();
+            if (!updateIntervalId) {
+              updateIntervalId = setInterval(updateDeviceDisplay, 1000);
+            }
+          } else {
+            if (updateIntervalId) {
+              clearInterval(updateIntervalId);
+              updateIntervalId = null;
+            }
+          }
+        });
+        
+        // Initial update
+        updateDeviceDisplay();
+        updateIntervalId = setInterval(updateDeviceDisplay, 1000);
+      }
+      
+      document.getElementById('status').textContent = 'Ready - tap an app to launch';
+    }
+    
+    // Keyboard navigation (for testing in browser)
+    document.addEventListener('keydown', (e) => {
+      switch (e.key) {
+        case 'ArrowUp':
+          selectedSlot = selectedSlot < 3 ? selectedSlot + 6 : selectedSlot - 3;
+          break;
+        case 'ArrowDown':
+          selectedSlot = selectedSlot > 5 ? selectedSlot - 6 : selectedSlot + 3;
+          break;
+        case 'ArrowLeft':
+          selectedSlot = selectedSlot % 3 === 0 ? selectedSlot + 2 : selectedSlot - 1;
+          break;
+        case 'ArrowRight':
+          selectedSlot = selectedSlot % 3 === 2 ? selectedSlot - 2 : selectedSlot + 1;
+          break;
+        case 'Enter':
+          const app = apps[selectedSlot];
+          if (app.enabled && window.tapir) {
+            window.tapir.call('launcher.launch', { index: selectedSlot });
+          }
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      renderWebGrid();
+      updateDeviceDisplay();
+    });
+    
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
+

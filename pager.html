@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tapir Pager</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .container {
+      max-width: 400px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 18px;
+      color: #00ff88;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    .status {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: #1a1a2e;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 12px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ff4444;
+      margin-right: 8px;
+    }
+    .status-dot.connected { background: #00ff88; }
+    .clocks {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .clock {
+      background: #1a1a2e;
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+    .clock-city {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    .clock-time {
+      font-size: 20px;
+      font-weight: bold;
+      color: #00ccff;
+    }
+    .notifications {
+      background: #1a1a2e;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .notifications h2 {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+    .notification {
+      padding: 8px;
+      border-bottom: 1px solid #2a2a3e;
+      font-size: 12px;
+    }
+    .notification:last-child { border-bottom: none; }
+    .notification-app {
+      font-size: 10px;
+      color: #00ff88;
+      margin-bottom: 2px;
+    }
+    .notification-title {
+      font-weight: bold;
+      color: #fff;
+    }
+    .notification-text {
+      color: #aaa;
+      font-size: 11px;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .notification-time {
+      font-size: 10px;
+      color: #666;
+      margin-top: 4px;
+    }
+    .empty {
+      color: #666;
+      text-align: center;
+      padding: 20px;
+      font-size: 12px;
+    }
+    .terminal-preview {
+      background: #000;
+      border: 2px solid #333;
+      border-radius: 8px;
+      padding: 8px;
+      margin-top: 16px;
+      font-family: monospace;
+      font-size: 9px;
+      line-height: 1.2;
+      color: #00ff88;
+      white-space: pre;
+      overflow: hidden;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      margin-top: 12px;
+      background: #00ff88;
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .btn:active { opacity: 0.8; }
+    .btn-secondary {
+      background: #333;
+      color: #fff;
+    }
+    .auto-status {
+      text-align: center;
+      padding: 12px;
+      margin-top: 16px;
+      background: #1a1a2e;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #888;
+    }
+    .auto-status.active {
+      color: #00ff88;
+      background: #0a2a1a;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🦛 Tapir Pager</h1>
+    
+    <div class="status">
+      <div style="display: flex; align-items: center;">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Disconnected</span>
+      </div>
+      <span id="localTime">--:--</span>
+    </div>
+    
+    <div class="clocks">
+      <div class="clock">
+        <div class="clock-city">🇯🇵 OSAKA</div>
+        <div class="clock-time" id="osakaTime">--:--</div>
+      </div>
+      <div class="clock">
+        <div class="clock-city">🇺🇦 KYIV</div>
+        <div class="clock-time" id="kyivTime">--:--</div>
+      </div>
+    </div>
+    
+    <div class="notifications">
+      <h2>📬 RECENT NOTIFICATIONS</h2>
+      <div id="notificationList">
+        <div class="empty">No notifications yet.<br>They will appear here when received.</div>
+      </div>
+    </div>
+    
+    <div class="terminal-preview" id="terminalPreview">
+      Loading...
+    </div>
+    
+    <div class="auto-status" id="autoStatus">
+      ⏸️ Auto-update paused (not connected)
+    </div>
+    
+    <button class="btn btn-secondary" onclick="addTestNotification()">🧪 Add Test Notification</button>
+    <button class="btn btn-secondary" onclick="sendToDevice()">📤 Force Send</button>
+  </div>
+
+  <script>
+    // ========================================================================
+    // State
+    // ========================================================================
+    
+    const COLS = 32;
+    const ROWS = 18;
+    
+    let notifications = [];
+    let isConnected = false;
+    
+    // ========================================================================
+    // Time Functions
+    // ========================================================================
+    
+    function getTimeInTimezone(offsetHours, includeSeconds = true) {
+      const now = new Date();
+      const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+      const tzTime = new Date(utc + (offsetHours * 3600000));
+      const options = { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        hour12: false 
+      };
+      if (includeSeconds) {
+        options.second = '2-digit';
+      }
+      return tzTime.toLocaleTimeString('en-US', options);
+    }
+    
+    function getOsakaTime() {
+      return getTimeInTimezone(9); // JST = UTC+9
+    }
+    
+    function getKyivTime() {
+      // Kyiv is UTC+2 in winter, UTC+3 in summer (EET/EEST)
+      const now = new Date();
+      const jan = new Date(now.getFullYear(), 0, 1);
+      const jul = new Date(now.getFullYear(), 6, 1);
+      const stdOffset = Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset());
+      const isDST = now.getTimezoneOffset() < stdOffset;
+      // Kyiv observes DST from last Sunday of March to last Sunday of October
+      // Simplified: assume current month for DST
+      const month = now.getMonth();
+      const kyivDST = month >= 2 && month <= 9; // March to October
+      return getTimeInTimezone(kyivDST ? 3 : 2);
+    }
+    
+    function getLocalTime() {
+      return new Date().toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false 
+      });
+    }
+    
+    function updateClocks() {
+      document.getElementById('osakaTime').textContent = getOsakaTime();
+      document.getElementById('kyivTime').textContent = getKyivTime();
+      document.getElementById('localTime').textContent = getLocalTime();
+    }
+    
+    // ========================================================================
+    // Notification Handling
+    // ========================================================================
+    
+    function addNotification(app, title, text) {
+      const notification = {
+        app,
+        title,
+        text,
+        timestamp: Date.now()
+      };
+      
+      // Keep only last 3
+      notifications.unshift(notification);
+      if (notifications.length > 3) {
+        notifications = notifications.slice(0, 3);
+      }
+      
+      renderNotifications();
+      renderTerminalPreview();
+    }
+    
+    function renderNotifications() {
+      const container = document.getElementById('notificationList');
+      
+      if (notifications.length === 0) {
+        container.innerHTML = '<div class="empty">No notifications yet.<br>They will appear here when received.</div>';
+        return;
+      }
+      
+      container.innerHTML = notifications.map(n => {
+        const ago = formatTimeAgo(n.timestamp);
+        return `
+          <div class="notification">
+            <div class="notification-app">${escapeHtml(n.app)}</div>
+            <div class="notification-title">${escapeHtml(n.title)}</div>
+            <div class="notification-text">${escapeHtml(n.text)}</div>
+            <div class="notification-time">${ago}</div>
+          </div>
+        `;
+      }).join('');
+    }
+    
+    function formatTimeAgo(timestamp) {
+      const seconds = Math.floor((Date.now() - timestamp) / 1000);
+      if (seconds < 60) return 'Just now';
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      return `${hours}h ago`;
+    }
+    
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+    
+    // ========================================================================
+    // Terminal Rendering
+    // ========================================================================
+    
+    function renderTerminalBuffer() {
+      const buffer = new Array(ROWS).fill(null).map(() => new Array(COLS).fill(' '));
+      
+      // Helper to write text
+      const write = (x, y, text) => {
+        for (let i = 0; i < text.length && x + i < COLS; i++) {
+          if (y >= 0 && y < ROWS) {
+            buffer[y][x + i] = text[i];
+          }
+        }
+      };
+      
+      // Helper to draw horizontal line
+      const hline = (x, y, len, char = '-') => {
+        for (let i = 0; i < len && x + i < COLS; i++) {
+          buffer[y][x + i] = char;
+        }
+      };
+      
+      // Row 0: Header with local time (with seconds)
+      const now = getLocalTime();
+      write(0, 0, `PAGER`);
+      write(COLS - 8, 0, now);
+      
+      // Row 1: Separator
+      hline(0, 1, COLS, '=');
+      
+      // Rows 2-3: World clocks (with seconds)
+      const osaka = getOsakaTime();
+      const kyiv = getKyivTime();
+      write(0, 2, `OSA ${osaka}`);
+      write(16, 2, `KYV ${kyiv}`);
+      
+      // Row 3: Separator
+      hline(0, 3, COLS, '-');
+      
+      // Rows 4-17: Notifications (4 rows each, max 3)
+      let row = 4;
+      
+      if (notifications.length === 0) {
+        write(0, 6, '   No notifications');
+        write(0, 8, '   Waiting...');
+      } else {
+        for (let i = 0; i < Math.min(3, notifications.length); i++) {
+          const n = notifications[i];
+          const appLine = n.app.substring(0, COLS);
+          const titleLine = n.title.substring(0, COLS);
+          const textLine = n.text.substring(0, COLS);
+          
+          write(0, row, appLine);
+          write(0, row + 1, titleLine);
+          write(0, row + 2, textLine);
+          
+          row += 4;
+          
+          if (row < ROWS - 1 && i < notifications.length - 1) {
+            hline(0, row - 1, COLS, '.');
+          }
+        }
+      }
+      
+      // Row 17: Footer
+      hline(0, ROWS - 1, COLS, '=');
+      
+      return buffer;
+    }
+    
+    function bufferToString(buffer) {
+      return buffer.map(row => row.join('')).join('\n');
+    }
+    
+    function bufferToBase64(buffer) {
+      const str = buffer.map(row => row.join('')).join('');
+      return btoa(str);
+    }
+    
+    function renderTerminalPreview() {
+      const buffer = renderTerminalBuffer();
+      document.getElementById('terminalPreview').textContent = bufferToString(buffer);
+    }
+    
+    // ========================================================================
+    // Device Communication
+    // ========================================================================
+    
+    async function sendToDevice() {
+      if (!window.tapir) {
+        alert('Not running in Tapir Runtime');
+        return;
+      }
+      
+      try {
+        const buffer = renderTerminalBuffer();
+        const base64 = bufferToBase64(buffer);
+        await window.tapir.terminal(base64, COLS, ROWS);
+        console.log('Sent to device!');
+      } catch (e) {
+        console.error('Send error:', e);
+        alert('Error: ' + e.message);
+      }
+    }
+    
+    async function updateDeviceStatus() {
+      const autoStatusEl = document.getElementById('autoStatus');
+      
+      if (!window.tapir) {
+        isConnected = false;
+        document.getElementById('statusDot').classList.remove('connected');
+        document.getElementById('statusText').textContent = 'Not in Tapir Runtime';
+        autoStatusEl.textContent = '⚠️ Open in Tapir Runtime app';
+        autoStatusEl.classList.remove('active');
+        return;
+      }
+      
+      try {
+        const info = await window.tapir.device.info();
+        isConnected = info.connected;
+        document.getElementById('statusDot').classList.toggle('connected', isConnected);
+        document.getElementById('statusText').textContent = isConnected ? 
+          `Connected (MTU: ${info.mtu})` : 'Disconnected';
+        
+        if (isConnected) {
+          autoStatusEl.textContent = '🔄 Live updating (4 FPS)';
+          autoStatusEl.classList.add('active');
+        } else {
+          autoStatusEl.textContent = '⏸️ Connect device to enable auto-update';
+          autoStatusEl.classList.remove('active');
+        }
+      } catch (e) {
+        console.error('Status error:', e);
+      }
+    }
+    
+    // ========================================================================
+    // Event Listeners
+    // ========================================================================
+    
+    function setupEventListeners() {
+      if (!window.tapir) return;
+      
+      // Listen for notifications from native
+      window.tapir.on('notification', (data) => {
+        console.log('Notification received:', data);
+        addNotification(data.app, data.title, data.text);
+        
+        // Auto-send to device if connected
+        if (isConnected) {
+          sendToDevice();
+        }
+      });
+      
+      // Listen for connection changes
+      window.tapir.on('connection', (data) => {
+        console.log('Connection changed:', data);
+        updateDeviceStatus();
+      });
+      
+      // Listen for button presses
+      window.tapir.on('button', (data) => {
+        console.log('Button pressed:', data);
+        // Could use buttons to scroll through notifications
+      });
+    }
+    
+    // ========================================================================
+    // Test Functions
+    // ========================================================================
+    
+    const testNotifications = [
+      { app: 'Messages', title: 'Mom', text: 'Don\'t forget to call grandma!' },
+      { app: 'Slack', title: '#general', text: 'Meeting in 10 minutes' },
+      { app: 'Gmail', title: 'GitHub', text: 'New pull request from dependabot' },
+      { app: 'Calendar', title: 'Reminder', text: 'Dentist appointment at 3pm' },
+      { app: 'Twitter', title: '@elonmusk', text: 'Breaking: Mars colony update...' },
+    ];
+    
+    let testIndex = 0;
+    
+    function addTestNotification() {
+      const n = testNotifications[testIndex % testNotifications.length];
+      addNotification(n.app, n.title, n.text);
+      testIndex++;
+    }
+    
+    // ========================================================================
+    // Auto-Update Loop
+    // ========================================================================
+    
+    let lastSentBuffer = '';
+    let sendInProgress = false;
+    
+    async function autoUpdateDevice() {
+      if (!window.tapir || !isConnected || sendInProgress) {
+        return;
+      }
+      
+      try {
+        const buffer = renderTerminalBuffer();
+        const base64 = bufferToBase64(buffer);
+        
+        // Only send if buffer changed
+        if (base64 === lastSentBuffer) {
+          return;
+        }
+        
+        sendInProgress = true;
+        await window.tapir.terminal(base64, COLS, ROWS);
+        lastSentBuffer = base64;
+        console.log('Auto-sent to device');
+      } catch (e) {
+        console.error('Auto-send error:', e);
+      } finally {
+        sendInProgress = false;
+      }
+    }
+    
+    // ========================================================================
+    // Initialization
+    // ========================================================================
+    
+    function init() {
+      // Update clocks every second
+      updateClocks();
+      setInterval(updateClocks, 1000);
+      
+      // Update terminal preview every second
+      renderTerminalPreview();
+      setInterval(renderTerminalPreview, 1000);
+      
+      // Check device status
+      updateDeviceStatus();
+      setInterval(updateDeviceStatus, 3000);
+      
+      // AUTO-UPDATE: Send to device every 250ms for smooth seconds display
+      setInterval(autoUpdateDevice, 250);
+      
+      // Setup event listeners
+      setupEventListeners();
+      
+      console.log('Tapir Pager initialized - auto-update enabled');
+    }
+    
+    // Start when DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  </script>
+</body>
+</html>
+
