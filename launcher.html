@@ -107,16 +107,17 @@
     const ROWS = 18;
     
     // App configurations (synced from native)
+    // Web icons (emoji) and terminal icons (ASCII) are separate
     let apps = [
-      { id: 0, name: 'Pager', icon: '📟', enabled: true },
-      { id: 1, name: 'Clock', icon: '🕐', enabled: false },
-      { id: 2, name: 'Notes', icon: '📝', enabled: false },
-      { id: 3, name: 'Calc', icon: '🔢', enabled: false },
-      { id: 4, name: 'Timer', icon: '⏱️', enabled: false },
-      { id: 5, name: 'Snake', icon: '🐍', enabled: false },
-      { id: 6, name: 'Chat', icon: '💬', enabled: false },
-      { id: 7, name: 'Music', icon: '🎵', enabled: false },
-      { id: 8, name: 'Radio', icon: '📻', enabled: false },
+      { id: 0, name: 'Pager', icon: '📟', termIcon: 'Pg', enabled: true },
+      { id: 1, name: 'Clock', icon: '🕐', termIcon: 'Ck', enabled: false },
+      { id: 2, name: 'Notes', icon: '📝', termIcon: 'Nt', enabled: false },
+      { id: 3, name: 'Calc', icon: '🔢', termIcon: 'Ca', enabled: false },
+      { id: 4, name: 'Timer', icon: '⏱️', termIcon: 'Tm', enabled: false },
+      { id: 5, name: 'Snake', icon: '🐍', termIcon: 'Sn', enabled: false },
+      { id: 6, name: 'Chat', icon: '💬', termIcon: 'Ch', enabled: false },
+      { id: 7, name: 'Music', icon: '🎵', termIcon: 'Mu', enabled: false },
+      { id: 8, name: 'Radio', icon: '📻', termIcon: 'Ra', enabled: false },
     ];
     
     let selectedSlot = 0;
@@ -148,13 +149,13 @@
       });
     }
     
-    // Render the terminal buffer for the device display
+    // Render the terminal buffer for the device display (ASCII only!)
     function renderTerminal() {
       // Create buffer
       let buffer = '';
       
-      // Header row
-      const header = '═══ TAPIR LAUNCHER ═══';
+      // Header row (ASCII only)
+      const header = '=== TAPIR LAUNCHER ===';
       const headerPadded = header.padStart(Math.floor((COLS + header.length) / 2)).padEnd(COLS);
       buffer += headerPadded;
       
@@ -163,13 +164,13 @@
       
       // App grid (3 rows of 3 apps)
       for (let row = 0; row < 3; row++) {
-        // Icon row
+        // Icon row - use termIcon (ASCII)
         let iconLine = ' ';
         for (let col = 0; col < 3; col++) {
           const idx = row * 3 + col;
           const app = apps[idx];
           const isSelected = idx === selectedSlot;
-          const icon = app.enabled ? app.icon.slice(0, 2) : '  ';
+          const icon = app.enabled ? app.termIcon : '--';
           const left = isSelected ? '[' : ' ';
           const right = isSelected ? ']' : ' ';
           // Each cell is ~10 chars wide
@@ -197,11 +198,11 @@
         buffer += ' '.repeat(COLS);
       }
       
-      // Footer with navigation hints
-      const footer1 = '──────────────────────────────';
+      // Footer with navigation hints (ASCII only)
+      const footer1 = '--------------------------------';
       buffer += footer1.slice(0, COLS).padEnd(COLS);
       
-      const footer2 = '  [←Back]  [⌂Home]  [☰Menu]  ';
+      const footer2 = '  [<Back]  [Home]  [Menu]  ';
       buffer += footer2.slice(0, COLS).padEnd(COLS);
       
       // Ensure exactly COLS * ROWS chars
