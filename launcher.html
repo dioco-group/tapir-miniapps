@@ -201,13 +201,7 @@
       if (window.tapir && window.tapir.terminal) {
         // Only send if changed
         if (currentBuffer !== lastSentBuffer) {
-          console.log('[Launcher] Sending terminal buffer, length:', currentBuffer.length);
-          try {
-            window.tapir.terminal(btoa(currentBuffer));
-            console.log('[Launcher] terminal() called successfully');
-          } catch (e) {
-            console.error('[Launcher] terminal() error:', e);
-          }
+          window.tapir.terminal(btoa(currentBuffer));
           lastSentBuffer = currentBuffer;
           const connected = window.tapir.isConnected && window.tapir.isConnected();
           document.getElementById('status').textContent = connected ? '✅ Device updated' : '🔵 Simulator updated';
@@ -216,7 +210,6 @@
           document.getElementById('status').textContent = connected ? '✓ Device in sync' : '✓ Simulator in sync';
         }
       } else {
-        console.log('[Launcher] Bridge not ready, window.tapir:', !!window.tapir, 'terminal:', !!(window.tapir && window.tapir.terminal));
         document.getElementById('status').textContent = '⏳ Bridge not ready';
       }
     }
