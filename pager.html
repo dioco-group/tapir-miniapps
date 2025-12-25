@@ -438,15 +438,10 @@
         isConnected = info.connected;
         document.getElementById('statusDot').classList.toggle('connected', isConnected);
         document.getElementById('statusText').textContent = isConnected ? 
-          `Connected (MTU: ${info.mtu})` : 'Disconnected';
+          `Connected (MTU: ${info.mtu})` : 'Simulator Mode';
         
-        if (isConnected) {
-          autoStatusEl.textContent = '🔄 Live updating (4 FPS)';
-          autoStatusEl.classList.add('active');
-        } else {
-          autoStatusEl.textContent = '⏸️ Connect device to enable auto-update';
-          autoStatusEl.classList.remove('active');
-        }
+        autoStatusEl.textContent = isConnected ? '🔄 Device updating (4 FPS)' : '🔵 Simulator updating (4 FPS)';
+        autoStatusEl.classList.add('active');
       } catch (e) {
         console.error('Status error:', e);
       }
@@ -511,7 +506,8 @@
     let sendInProgress = false;
     
     async function autoUpdateDevice() {
-      if (!window.tapir || !isConnected || sendInProgress) {
+      // Always send to bridge (works for both device and simulator)
+      if (!window.tapir || sendInProgress) {
         return;
       }
       
@@ -527,7 +523,7 @@
         sendInProgress = true;
         await window.tapir.terminal(base64, COLS, ROWS);
         lastSentBuffer = base64;
-        console.log('Auto-sent to device');
+        console.log(isConnected ? 'Sent to device' : 'Sent to simulator');
       } catch (e) {
         console.error('Auto-send error:', e);
       } finally {

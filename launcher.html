@@ -212,27 +212,29 @@
     
     // Update the device display
     function updateDeviceDisplay() {
-      if (!window.tapir || !window.tapir.isConnected || !window.tapir.isConnected()) {
-        document.getElementById('status').textContent = '🔴 Not connected to device';
-        return;
-      }
-      
       const currentBuffer = renderTerminal();
       
-      // Show preview
+      // Show preview in web UI
       const lines = [];
       for (let i = 0; i < ROWS; i++) {
         lines.push(currentBuffer.slice(i * COLS, (i + 1) * COLS));
       }
       document.getElementById('terminal').textContent = lines.join('\n');
       
-      // Only send if changed
-      if (currentBuffer !== lastSentBuffer) {
-        window.tapir.terminal(btoa(currentBuffer));
-        lastSentBuffer = currentBuffer;
-        document.getElementById('status').textContent = '✅ Display updated';
+      // Send to device/simulator if bridge available
+      if (window.tapir && window.tapir.terminal) {
+        // Only send if changed
+        if (currentBuffer !== lastSentBuffer) {
+          window.tapir.terminal(btoa(currentBuffer));
+          lastSentBuffer = currentBuffer;
+          const connected = window.tapir.isConnected && window.tapir.isConnected();
+          document.getElementById('status').textContent = connected ? '✅ Device updated' : '🔵 Simulator updated';
+        } else {
+          const connected = window.tapir.isConnected && window.tapir.isConnected();
+          document.getElementById('status').textContent = connected ? '✓ Device in sync' : '✓ Simulator in sync';
+        }
       } else {
-        document.getElementById('status').textContent = '✓ Display in sync';
+        document.getElementById('status').textContent = '⏳ Bridge not ready';
       }
     }
     
@@ -266,26 +268,11 @@
             }
           }
         });
-        
-        // Start update loop when connected
-        window.tapir.on('connectionChange', (isConnected) => {
-          if (isConnected) {
-            updateDeviceDisplay();
-            if (!updateIntervalId) {
-              updateIntervalId = setInterval(updateDeviceDisplay, 1000);
-            }
-          } else {
-            if (updateIntervalId) {
-              clearInterval(updateIntervalId);
-              updateIntervalId = null;
-            }
-          }
-        });
-        
-        // Initial update
-        updateDeviceDisplay();
-        updateIntervalId = setInterval(updateDeviceDisplay, 1000);
       }
+      
+      // Always start update loop (works for both device and simulator)
+      updateDeviceDisplay();
+      updateIntervalId = setInterval(updateDeviceDisplay, 1000);
       
       document.getElementById('status').textContent = 'Ready - tap an app to launch';
     }
