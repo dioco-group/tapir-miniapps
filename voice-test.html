@@ -179,6 +179,7 @@
   <div class="section">
     <h2>Last Clip</h2>
     <button class="btn-play" id="playBtn" disabled>▶ Play Recording</button>
+    <button class="btn-download" id="downloadBtn" disabled style="background:#2196F3;color:white;margin-top:8px;">⬇ Download OGG</button>
     <p class="hint" id="clipInfo">No recording yet</p>
   </div>
   
@@ -213,8 +214,11 @@
     const bytesReceivedEl = document.getElementById('bytesReceived');
     const durationEl = document.getElementById('duration');
     const playBtn = document.getElementById('playBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
     const clipInfoEl = document.getElementById('clipInfo');
     const logEl = document.getElementById('log');
+    
+    let lastOggData = null; // For download
     
     // ============================================================
     // Logging
@@ -329,9 +333,23 @@
       
       log(`Wrapping ${opusFrames.length} Opus frames in OGG container...`);
       
+      // Log first frame info for debugging
+      if (opusFrames.length > 0) {
+        const f = opusFrames[0];
+        log(`First frame: ${f.length} bytes, TOC: 0x${f[0].toString(16)}`);
+      }
+      
       // Build OGG/Opus container from raw frames
       const oggData = buildOggOpus(opusFrames, 16000, 1);
+      lastOggData = oggData; // Save for download
       log(`OGG container: ${oggData.length} bytes`);
+      
+      // Debug: log first bytes
+      const hex = Array.from(oggData.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      log(`OGG header: ${hex}`);
+      
+      // Enable download button
+      downloadBtn.disabled = false;
       
       // Decode using native Web Audio API
       const arrayBuffer = oggData.buffer.slice(
@@ -344,6 +362,7 @@
         log(`Decoded: ${lastAudioBuffer.duration.toFixed(2)}s @ ${lastAudioBuffer.sampleRate}Hz`);
       } catch (err) {
         log(`Native decode failed: ${err.message}`, 'error');
+        log('Try downloading the OGG and testing in VLC/ffprobe', 'error');
         throw err;
       }
     }
@@ -352,49 +371,58 @@
     // OGG/Opus Container Builder (RFC 7845)
     // ============================================================
     
-    function buildOggOpus(frames, sampleRate, channels) {
+    function buildOggOpus(frames, inputSampleRate, channels) {
       const pages = [];
       let pageSequence = 0;
       let granulePosition = 0;
       
-      // Pre-skip: 312 samples for 16kHz (standard Opus encoder delay)
-      const preSkip = 312;
+      // IMPORTANT: Opus internally always uses 48kHz
+      // Granule positions are in 48kHz samples regardless of input rate
+      const OPUS_INTERNAL_RATE = 48000;
       
-      // OpusHead packet (19 bytes)
-      const opusHead = new Uint8Array([
-        0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, // "OpusHead"
-        0x01,                                             // Version
-        channels,                                         // Channels
-        preSkip & 0xFF, (preSkip >> 8) & 0xFF,           // Pre-skip (LE)
-        sampleRate & 0xFF, (sampleRate >> 8) & 0xFF,     // Sample rate (LE)
-        (sampleRate >> 16) & 0xFF, (sampleRate >> 24) & 0xFF,
-        0x00, 0x00,                                       // Output gain
-        0x00                                              // Channel mapping
-      ]);
+      // Pre-skip: standard Opus encoder delay (3840 samples at 48kHz = 80ms)
+      // For libopus default, it's typically 312 samples at input rate
+      // At 48kHz: 312 * (48000/16000) = 936, but standard is often 3840
+      const preSkip = 312 * (OPUS_INTERNAL_RATE / inputSampleRate);
       
-      // OpusTags packet
-      const vendor = 'tapir';
+      // Samples per frame at 48kHz (20ms frame = 960 samples)
+      const samplesPerFrame48k = (20 * OPUS_INTERNAL_RATE) / 1000; // 960
+      
+      // OpusHead packet (19 bytes) - RFC 7845
+      const opusHead = new Uint8Array(19);
+      const headView = new DataView(opusHead.buffer);
+      opusHead.set([0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64]); // "OpusHead"
+      opusHead[8] = 0x01;                    // Version 1
+      opusHead[9] = channels;                // Channel count
+      headView.setUint16(10, preSkip, true); // Pre-skip (LE)
+      headView.setUint32(12, inputSampleRate, true); // Original sample rate (LE)
+      headView.setInt16(16, 0, true);        // Output gain (0 dB)
+      opusHead[18] = 0x00;                   // Channel mapping family 0
+      
+      // OpusTags packet - minimal valid tags
+      const vendor = 'libopus';
       const opusTags = new Uint8Array(8 + 4 + vendor.length + 4);
-      const tagsView = new DataView(opusTags.buffer);
       opusTags.set([0x4F, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73]); // "OpusTags"
+      const tagsView = new DataView(opusTags.buffer);
       tagsView.setUint32(8, vendor.length, true);
       for (let i = 0; i < vendor.length; i++) {
         opusTags[12 + i] = vendor.charCodeAt(i);
       }
-      tagsView.setUint32(12 + vendor.length, 0, true); // 0 comments
+      tagsView.setUint32(12 + vendor.length, 0, true); // 0 user comments
       
-      // Page 1: OpusHead (BOS)
-      pages.push(buildOggPage(opusHead, 0, pageSequence++, 0x02, true));
+      // Page 1: OpusHead (BOS flag = 0x02)
+      pages.push(buildOggPage(opusHead, 0, pageSequence++, 0x02));
       
-      // Page 2: OpusTags
-      pages.push(buildOggPage(opusTags, 0, pageSequence++, 0x00, false));
+      // Page 2: OpusTags (granule = 0 for header pages)
+      pages.push(buildOggPage(opusTags, 0, pageSequence++, 0x00));
       
-      // Audio pages - one frame per page for simplicity
-      const samplesPerFrame = 320; // 20ms at 16kHz
-      for (let i = 0; i < frames.length; i++) {
-        granulePosition += samplesPerFrame;
-        const isLast = i === frames.length - 1;
-        pages.push(buildOggPage(frames[i], granulePosition, pageSequence++, isLast ? 0x04 : 0x00, false));
+      // Audio pages - put multiple frames per page for efficiency
+      const FRAMES_PER_PAGE = 10;
+      for (let i = 0; i < frames.length; i += FRAMES_PER_PAGE) {
+        const pageFrames = frames.slice(i, Math.min(i + FRAMES_PER_PAGE, frames.length));
+        granulePosition += pageFrames.length * samplesPerFrame48k;
+        const isLast = (i + FRAMES_PER_PAGE) >= frames.length;
+        pages.push(buildOggPageMulti(pageFrames, granulePosition, pageSequence++, isLast ? 0x04 : 0x00));
       }
       
       // Concatenate all pages
@@ -409,58 +437,61 @@
       return result;
     }
     
-    function buildOggPage(data, granulePos, seqNum, flags, isBOS) {
-      // Calculate segment table
+    // Build page with multiple packets (for audio frames)
+    function buildOggPageMulti(packets, granulePos, seqNum, flags) {
+      // Build segment table for multiple packets
       const segments = [];
-      let remaining = data.length;
-      while (remaining >= 255) {
-        segments.push(255);
-        remaining -= 255;
+      for (const pkt of packets) {
+        let remaining = pkt.length;
+        while (remaining >= 255) {
+          segments.push(255);
+          remaining -= 255;
+        }
+        segments.push(remaining); // Final segment (can be 0 to indicate exactly 255*n bytes)
       }
-      segments.push(remaining);
       
+      const totalDataSize = packets.reduce((sum, p) => sum + p.length, 0);
       const headerSize = 27 + segments.length;
-      const page = new Uint8Array(headerSize + data.length);
+      const page = new Uint8Array(headerSize + totalDataSize);
       const view = new DataView(page.buffer);
       
-      // Magic: "OggS"
-      page.set([0x4F, 0x67, 0x67, 0x53], 0);
+      // OGG page header
+      page.set([0x4F, 0x67, 0x67, 0x53], 0); // "OggS"
+      page[4] = 0;                            // Version
+      page[5] = flags;                        // Flags
       
-      // Version
-      page[4] = 0;
+      // Granule position (64-bit LE) - use BigInt for safety
+      const gp = BigInt(granulePos);
+      view.setUint32(6, Number(gp & 0xFFFFFFFFn), true);
+      view.setUint32(10, Number((gp >> 32n) & 0xFFFFFFFFn), true);
       
-      // Flags
-      page[5] = flags;
-      
-      // Granule position (64-bit LE)
-      view.setUint32(6, granulePos, true);
-      view.setUint32(10, 0, true); // High 32 bits
-      
-      // Serial number
-      view.setUint32(14, 0x54415049, true); // "TAPI" as serial
-      
-      // Page sequence
-      view.setUint32(18, seqNum, true);
-      
-      // CRC (placeholder, calculate after)
-      view.setUint32(22, 0, true);
-      
-      // Segment count
-      page[26] = segments.length;
+      view.setUint32(14, 0x54415049, true);   // Serial "TAPI"
+      view.setUint32(18, seqNum, true);       // Page sequence
+      view.setUint32(22, 0, true);            // CRC placeholder
+      page[26] = segments.length;             // Segment count
       
       // Segment table
       for (let i = 0; i < segments.length; i++) {
         page[27 + i] = segments[i];
       }
       
-      // Data
-      page.set(data, headerSize);
+      // Packet data
+      let offset = headerSize;
+      for (const pkt of packets) {
+        page.set(pkt, offset);
+        offset += pkt.length;
+      }
       
       // Calculate and set CRC
       const crc = oggCrc32(page);
       view.setUint32(22, crc, true);
       
       return page;
+    }
+    
+    // Build page with single packet (for headers)
+    function buildOggPage(data, granulePos, seqNum, flags) {
+      return buildOggPageMulti([data], granulePos, seqNum, flags);
     }
     
     // OGG CRC-32 lookup table
@@ -514,6 +545,19 @@
     }
     
     playBtn.addEventListener('click', playAudio);
+    
+    // Download OGG file for debugging
+    downloadBtn.addEventListener('click', () => {
+      if (!lastOggData) return;
+      const blob = new Blob([lastOggData], { type: 'audio/ogg' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tapir-voice-${Date.now()}.ogg`;
+      a.click();
+      URL.revokeObjectURL(url);
+      log('Downloaded OGG file');
+    });
     
     // ============================================================
     // Bridge Integration
