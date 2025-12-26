@@ -155,6 +155,7 @@
       <span id="statusText">Idle</span>
     </div>
     <p class="hint">Press KEY2 on Tapir to record</p>
+    <p class="hint">Decoder: <span id="decoderStatus" style="color: #FF9800;">Loading...</span></p>
   </div>
   
   <div class="section">
@@ -186,10 +187,7 @@
     <div class="log" id="log"></div>
   </div>
 
-  <!-- Load opus-decoder from CDN (ESM) -->
-  <script type="module">
-    import { OpusDecoder } from 'https://esm.sh/opus-decoder@0.7.7';
-    
+  <script>
     // ============================================================
     // State
     // ============================================================
@@ -199,20 +197,40 @@
     let recordingStart = 0;
     let audioContext = null;
     let decoder = null;
+    let decoderReady = false;
+    let decoderError = null;
     let lastAudioBuffer = null;
     let durationInterval = null;
     
-    // Initialize Opus decoder
+    // Initialize Opus decoder (dynamically import)
     async function initDecoder() {
       try {
-        log('Initializing Opus decoder...');
+        log('Loading Opus decoder from CDN...');
+        
+        // Dynamic import for ESM module
+        const module = await import('https://esm.sh/opus-decoder@0.7.7');
+        const OpusDecoder = module.OpusDecoder;
+        
+        log('Creating decoder instance...');
         decoder = new OpusDecoder({ sampleRate: 16000, channels: 1 });
         await decoder.ready;
-        log('Opus decoder ready', 'success');
+        decoderReady = true;
+        log('Opus decoder ready!', 'success');
+        
+        // Update UI
+        document.getElementById('decoderStatus').textContent = '✓ Ready';
+        document.getElementById('decoderStatus').style.color = '#4CAF50';
       } catch (err) {
-        log(`Decoder init failed: ${err.message}`, 'error');
+        decoderError = err.message || String(err);
+        log(`Decoder init failed: ${decoderError}`, 'error');
+        
+        // Update UI
+        document.getElementById('decoderStatus').textContent = '✗ Failed';
+        document.getElementById('decoderStatus').style.color = '#f44336';
       }
     }
+    
+    // Start loading decoder immediately
     initDecoder();
     
     // ============================================================
@@ -339,23 +357,46 @@
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       }
       
-      if (!decoder) {
-        throw new Error('Opus decoder not initialized');
+      // Check decoder state
+      if (decoderError) {
+        throw new Error(`Decoder failed to load: ${decoderError}`);
+      }
+      
+      if (!decoderReady || !decoder) {
+        log('Waiting for decoder to be ready...');
+        // Wait up to 5 seconds for decoder
+        for (let i = 0; i < 50; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          if (decoderReady && decoder) break;
+          if (decoderError) throw new Error(`Decoder failed: ${decoderError}`);
+        }
+        if (!decoderReady || !decoder) {
+          throw new Error('Decoder not ready after 5s timeout');
+        }
       }
       
       log(`Decoding ${opusFrames.length} Opus frames...`);
       
-      // Decode all frames using opus-decoder
-      const { channelData, samplesDecoded, sampleRate } = decoder.decodeFrames(opusFrames);
-      
-      log(`Decoded ${samplesDecoded} samples at ${sampleRate}Hz`);
-      
-      // Create AudioBuffer from decoded PCM
-      lastAudioBuffer = audioContext.createBuffer(1, samplesDecoded, sampleRate);
-      lastAudioBuffer.copyToChannel(channelData[0], 0);
-      
-      // Reset decoder state for next recording
-      decoder.reset();
+      try {
+        // Decode all frames using opus-decoder
+        const { channelData, samplesDecoded, sampleRate } = decoder.decodeFrames(opusFrames);
+        
+        log(`Decoded ${samplesDecoded} samples at ${sampleRate}Hz`);
+        
+        if (samplesDecoded === 0) {
+          throw new Error('No samples decoded - invalid Opus data?');
+        }
+        
+        // Create AudioBuffer from decoded PCM
+        lastAudioBuffer = audioContext.createBuffer(1, samplesDecoded, sampleRate);
+        lastAudioBuffer.copyToChannel(channelData[0], 0);
+        
+        // Reset decoder state for next recording
+        decoder.reset();
+      } catch (err) {
+        log(`Decode error details: ${err.stack || err}`, 'error');
+        throw err;
+      }
     }
     
     // ============================================================
@@ -396,45 +437,56 @@
     // Bridge Integration
     // ============================================================
     
+    // Prevent duplicate registration
+    let bridgeRegistered = false;
+    
+    function setupBridge() {
+      if (bridgeRegistered) {
+        log('Bridge already registered, skipping');
+        return;
+      }
+      
+      if (window.tapir) {
+        bridgeRegistered = true;
+        log('Bridge connected');
+        
+        // Listen for voice events
+        window.tapir.on('voice', (event) => {
+          switch (event.type) {
+            case 'start':
+              onVoiceStart();
+              break;
+            case 'data':
+              onVoiceData(event);
+              break;
+            case 'end':
+              onVoiceEnd();
+              break;
+          }
+        });
+        
+        log('Listening for voice events');
+      } else {
+        log('No bridge detected', 'error');
+      }
+    }
+    
+    // Try to setup bridge now, or wait for it
     if (window.tapir) {
-      log('Bridge connected');
-      
-      // Listen for voice events
-      window.tapir.on('voice', (event) => {
-        switch (event.type) {
-          case 'start':
-            onVoiceStart();
-            break;
-          case 'data':
-            onVoiceData(event);
-            break;
-          case 'end':
-            onVoiceEnd();
-            break;
-        }
-      });
-      
-      log('Listening for voice events');
+      setupBridge();
     } else {
-      log('No bridge - running standalone', 'error');
-      
-      // For testing without bridge, simulate some events
-      setTimeout(() => {
-        log('Simulating voice start...');
-        onVoiceStart();
-        
-        // Simulate some packets (these won't decode, just for UI testing)
-        for (let i = 0; i < 10; i++) {
-          setTimeout(() => {
-            onVoiceData({ audio: btoa(String.fromCharCode(...new Uint8Array(40))) });
-          }, i * 100);
+      // Bridge might be injected after script runs
+      let attempts = 0;
+      const checkBridge = setInterval(() => {
+        attempts++;
+        if (window.tapir) {
+          clearInterval(checkBridge);
+          setupBridge();
+        } else if (attempts > 20) {
+          clearInterval(checkBridge);
+          log('Bridge not available after 2s', 'error');
         }
-        
-        setTimeout(() => {
-          log('Simulating voice end...');
-          onVoiceEnd();
-        }, 1200);
-      }, 1000);
+      }, 100);
     }
     
     log('Voice Test mini-app loaded');
