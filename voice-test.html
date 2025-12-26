@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Voice Test</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    
+    h1 {
+      font-size: 20px;
+      margin-bottom: 16px;
+      color: #4CAF50;
+    }
+    
+    .section {
+      background: #252542;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    
+    .section h2 {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+    
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #666;
+    }
+    
+    .status-dot.listening {
+      background: #4CAF50;
+      animation: pulse 1s infinite;
+    }
+    
+    .status-dot.processing {
+      background: #FF9800;
+    }
+    
+    .status-dot.ready {
+      background: #2196F3;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      text-align: center;
+    }
+    
+    .stat-value {
+      font-size: 24px;
+      font-weight: bold;
+      color: #4CAF50;
+      font-family: monospace;
+    }
+    
+    .stat-label {
+      font-size: 11px;
+      color: #888;
+    }
+    
+    button {
+      width: 100%;
+      padding: 16px;
+      font-size: 16px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .btn-play {
+      background: #4CAF50;
+      color: white;
+    }
+    
+    .btn-play:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+    
+    .log {
+      background: #1a1a1a;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 11px;
+      max-height: 200px;
+      overflow-y: auto;
+      color: #aaa;
+    }
+    
+    .log-entry {
+      margin-bottom: 4px;
+    }
+    
+    .log-entry.error {
+      color: #f44336;
+    }
+    
+    .log-entry.success {
+      color: #4CAF50;
+    }
+    
+    .hint {
+      font-size: 12px;
+      color: #666;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎤 Voice Test</h1>
+  
+  <div class="section">
+    <h2>Status</h2>
+    <div class="status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Idle</span>
+    </div>
+    <p class="hint">Press KEY2 on Tapir to record</p>
+  </div>
+  
+  <div class="section">
+    <h2>Live Stats</h2>
+    <div class="stats">
+      <div>
+        <div class="stat-value" id="packetCount">0</div>
+        <div class="stat-label">Packets</div>
+      </div>
+      <div>
+        <div class="stat-value" id="bytesReceived">0</div>
+        <div class="stat-label">Bytes</div>
+      </div>
+      <div>
+        <div class="stat-value" id="duration">0.0s</div>
+        <div class="stat-label">Duration</div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="section">
+    <h2>Last Clip</h2>
+    <button class="btn-play" id="playBtn" disabled>▶ Play Recording</button>
+    <p class="hint" id="clipInfo">No recording yet</p>
+  </div>
+  
+  <div class="section">
+    <h2>Log</h2>
+    <div class="log" id="log"></div>
+  </div>
+
+  <!-- Load opus-decoder from CDN (ESM) -->
+  <script type="module">
+    import { OpusDecoder } from 'https://esm.sh/opus-decoder@0.7.7';
+    
+    // ============================================================
+    // State
+    // ============================================================
+    
+    let opusFrames = [];
+    let isRecording = false;
+    let recordingStart = 0;
+    let audioContext = null;
+    let decoder = null;
+    let lastAudioBuffer = null;
+    let durationInterval = null;
+    
+    // Initialize Opus decoder
+    async function initDecoder() {
+      try {
+        log('Initializing Opus decoder...');
+        decoder = new OpusDecoder({ sampleRate: 16000, channels: 1 });
+        await decoder.ready;
+        log('Opus decoder ready', 'success');
+      } catch (err) {
+        log(`Decoder init failed: ${err.message}`, 'error');
+      }
+    }
+    initDecoder();
+    
+    // ============================================================
+    // UI Elements
+    // ============================================================
+    
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const packetCountEl = document.getElementById('packetCount');
+    const bytesReceivedEl = document.getElementById('bytesReceived');
+    const durationEl = document.getElementById('duration');
+    const playBtn = document.getElementById('playBtn');
+    const clipInfoEl = document.getElementById('clipInfo');
+    const logEl = document.getElementById('log');
+    
+    // ============================================================
+    // Logging
+    // ============================================================
+    
+    function log(msg, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry' + (type !== 'info' ? ' ' + type : '');
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(`[VoiceTest] ${msg}`);
+    }
+    
+    // ============================================================
+    // Voice Event Handlers
+    // ============================================================
+    
+    function onVoiceStart() {
+      log('Recording started');
+      isRecording = true;
+      recordingStart = Date.now();
+      opusFrames = [];
+      
+      // Update UI
+      statusDot.className = 'status-dot listening';
+      statusText.textContent = 'Recording...';
+      packetCountEl.textContent = '0';
+      bytesReceivedEl.textContent = '0';
+      durationEl.textContent = '0.0s';
+      
+      // Start duration timer
+      durationInterval = setInterval(() => {
+        const dur = (Date.now() - recordingStart) / 1000;
+        durationEl.textContent = dur.toFixed(1) + 's';
+      }, 100);
+    }
+    
+    function onVoiceData(data) {
+      if (!isRecording) return;
+      
+      // data.audio is base64-encoded Opus frame
+      const opusBase64 = data.audio;
+      if (opusBase64) {
+        // Decode base64 to Uint8Array
+        const binary = atob(opusBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        opusFrames.push(bytes);
+        
+        // Update stats
+        const totalBytes = opusFrames.reduce((sum, f) => sum + f.length, 0);
+        packetCountEl.textContent = opusFrames.length;
+        bytesReceivedEl.textContent = totalBytes < 1024 
+          ? totalBytes + ' B' 
+          : (totalBytes / 1024).toFixed(1) + ' KB';
+      }
+    }
+    
+    async function onVoiceEnd() {
+      log(`Recording ended: ${opusFrames.length} packets`);
+      isRecording = false;
+      
+      // Stop duration timer
+      if (durationInterval) {
+        clearInterval(durationInterval);
+        durationInterval = null;
+      }
+      
+      // Update UI
+      statusDot.className = 'status-dot processing';
+      statusText.textContent = 'Processing...';
+      
+      if (opusFrames.length === 0) {
+        log('No audio data received', 'error');
+        statusDot.className = 'status-dot';
+        statusText.textContent = 'Idle';
+        return;
+      }
+      
+      // Try to decode Opus
+      try {
+        await decodeOpusFrames();
+        statusDot.className = 'status-dot ready';
+        statusText.textContent = 'Ready to play';
+        playBtn.disabled = false;
+        
+        const totalBytes = opusFrames.reduce((sum, f) => sum + f.length, 0);
+        const duration = lastAudioBuffer ? lastAudioBuffer.duration.toFixed(2) : '?';
+        clipInfoEl.textContent = `${opusFrames.length} packets, ${totalBytes} bytes, ${duration}s`;
+        
+        log(`Decoded successfully: ${duration}s audio`, 'success');
+      } catch (err) {
+        log(`Decode failed: ${err.message}`, 'error');
+        statusDot.className = 'status-dot';
+        statusText.textContent = 'Decode failed';
+        clipInfoEl.textContent = 'Decode error - see log';
+      }
+    }
+    
+    // ============================================================
+    // Opus Decoding (using opus-decoder WASM)
+    // ============================================================
+    
+    async function decodeOpusFrames() {
+      // Initialize AudioContext
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      }
+      
+      if (!decoder) {
+        throw new Error('Opus decoder not initialized');
+      }
+      
+      log(`Decoding ${opusFrames.length} Opus frames...`);
+      
+      // Decode all frames using opus-decoder
+      const { channelData, samplesDecoded, sampleRate } = decoder.decodeFrames(opusFrames);
+      
+      log(`Decoded ${samplesDecoded} samples at ${sampleRate}Hz`);
+      
+      // Create AudioBuffer from decoded PCM
+      lastAudioBuffer = audioContext.createBuffer(1, samplesDecoded, sampleRate);
+      lastAudioBuffer.copyToChannel(channelData[0], 0);
+      
+      // Reset decoder state for next recording
+      decoder.reset();
+    }
+    
+    // ============================================================
+    // Playback
+    // ============================================================
+    
+    async function playAudio() {
+      if (!lastAudioBuffer) {
+        log('No audio to play', 'error');
+        return;
+      }
+      
+      // Resume AudioContext if suspended (autoplay policy)
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+      
+      log('Playing audio...');
+      playBtn.disabled = true;
+      playBtn.textContent = '▶ Playing...';
+      
+      const source = audioContext.createBufferSource();
+      source.buffer = lastAudioBuffer;
+      source.connect(audioContext.destination);
+      
+      source.onended = () => {
+        log('Playback complete', 'success');
+        playBtn.disabled = false;
+        playBtn.textContent = '▶ Play Recording';
+      };
+      
+      source.start();
+    }
+    
+    playBtn.addEventListener('click', playAudio);
+    
+    // ============================================================
+    // Bridge Integration
+    // ============================================================
+    
+    if (window.tapir) {
+      log('Bridge connected');
+      
+      // Listen for voice events
+      window.tapir.on('voice', (event) => {
+        switch (event.type) {
+          case 'start':
+            onVoiceStart();
+            break;
+          case 'data':
+            onVoiceData(event);
+            break;
+          case 'end':
+            onVoiceEnd();
+            break;
+        }
+      });
+      
+      log('Listening for voice events');
+    } else {
+      log('No bridge - running standalone', 'error');
+      
+      // For testing without bridge, simulate some events
+      setTimeout(() => {
+        log('Simulating voice start...');
+        onVoiceStart();
+        
+        // Simulate some packets (these won't decode, just for UI testing)
+        for (let i = 0; i < 10; i++) {
+          setTimeout(() => {
+            onVoiceData({ audio: btoa(String.fromCharCode(...new Uint8Array(40))) });
+          }, i * 100);
+        }
+        
+        setTimeout(() => {
+          log('Simulating voice end...');
+          onVoiceEnd();
+        }, 1200);
+      }, 1000);
+    }
+    
+    log('Voice Test mini-app loaded');
+  </script>
+</body>
+</html>
+
