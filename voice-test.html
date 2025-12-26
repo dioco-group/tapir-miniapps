@@ -322,49 +322,113 @@
     }
     
     // ============================================================
-    // Opus Decoding (Native Web Audio + OGG container)
+    // Opus Decoding (WebCodecs API - raw frames, no container!)
     // ============================================================
     
     async function decodeOpusFrames() {
-      // Initialize AudioContext
+      // Initialize AudioContext for playback
       if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
       }
       
-      log(`Wrapping ${opusFrames.length} Opus frames in OGG container...`);
+      log(`Decoding ${opusFrames.length} raw Opus frames with WebCodecs...`);
       
-      // Log first frame info for debugging
+      // Log first frame info
       if (opusFrames.length > 0) {
         const f = opusFrames[0];
         log(`First frame: ${f.length} bytes, TOC: 0x${f[0].toString(16)}`);
       }
       
-      // Build OGG/Opus container from raw frames
+      // Check WebCodecs support
+      if (typeof AudioDecoder === 'undefined') {
+        log('WebCodecs not supported, falling back to OGG container', 'error');
+        return decodeWithOggFallback();
+      }
+      
+      // Collect decoded PCM samples
+      const pcmChunks = [];
+      let totalSamples = 0;
+      
+      return new Promise((resolve, reject) => {
+        const decoder = new AudioDecoder({
+          output: (audioData) => {
+            // Extract PCM samples from AudioData
+            const samples = new Float32Array(audioData.numberOfFrames);
+            audioData.copyTo(samples, { planeIndex: 0 });
+            pcmChunks.push(samples);
+            totalSamples += audioData.numberOfFrames;
+            audioData.close();
+          },
+          error: (err) => {
+            log(`WebCodecs decode error: ${err.message}`, 'error');
+            reject(err);
+          }
+        });
+        
+        // Configure for Opus
+        decoder.configure({
+          codec: 'opus',
+          sampleRate: 48000, // Opus always decodes to 48kHz
+          numberOfChannels: 1
+        });
+        
+        // Feed all frames
+        let timestamp = 0;
+        const frameDuration = 20000; // 20ms in microseconds
+        
+        for (const frame of opusFrames) {
+          decoder.decode(new EncodedAudioChunk({
+            type: 'key', // Opus frames are all keyframes
+            timestamp: timestamp,
+            data: frame
+          }));
+          timestamp += frameDuration;
+        }
+        
+        // Flush and wait for completion
+        decoder.flush().then(() => {
+          decoder.close();
+          
+          if (totalSamples === 0) {
+            reject(new Error('No samples decoded'));
+            return;
+          }
+          
+          log(`Decoded ${totalSamples} samples (${(totalSamples / 48000).toFixed(2)}s)`);
+          
+          // Combine all chunks into one buffer
+          const combined = new Float32Array(totalSamples);
+          let offset = 0;
+          for (const chunk of pcmChunks) {
+            combined.set(chunk, offset);
+            offset += chunk.length;
+          }
+          
+          // Create AudioBuffer
+          lastAudioBuffer = audioContext.createBuffer(1, totalSamples, 48000);
+          lastAudioBuffer.copyToChannel(combined, 0);
+          
+          log(`Created AudioBuffer: ${lastAudioBuffer.duration.toFixed(2)}s`, 'success');
+          resolve();
+        }).catch(reject);
+      });
+    }
+    
+    // Fallback: OGG container method
+    async function decodeWithOggFallback() {
+      log('Using OGG container fallback...');
+      
       const oggData = buildOggOpus(opusFrames, 16000, 1);
-      lastOggData = oggData; // Save for download
-      log(`OGG container: ${oggData.length} bytes`);
-      
-      // Debug: log first bytes
-      const hex = Array.from(oggData.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      log(`OGG header: ${hex}`);
-      
-      // Enable download button
+      lastOggData = oggData;
       downloadBtn.disabled = false;
       
-      // Decode using native Web Audio API
       const arrayBuffer = oggData.buffer.slice(
         oggData.byteOffset,
         oggData.byteOffset + oggData.byteLength
       );
       
-      try {
-        lastAudioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        log(`Decoded: ${lastAudioBuffer.duration.toFixed(2)}s @ ${lastAudioBuffer.sampleRate}Hz`);
-      } catch (err) {
-        log(`Native decode failed: ${err.message}`, 'error');
-        log('Try downloading the OGG and testing in VLC/ffprobe', 'error');
-        throw err;
-      }
+      lastAudioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      log(`Decoded: ${lastAudioBuffer.duration.toFixed(2)}s`);
     }
     
     // ============================================================
