@@ -196,42 +196,12 @@
     let isRecording = false;
     let recordingStart = 0;
     let audioContext = null;
-    let decoder = null;
-    let decoderReady = false;
-    let decoderError = null;
     let lastAudioBuffer = null;
     let durationInterval = null;
     
-    // Initialize Opus decoder (dynamically import)
-    async function initDecoder() {
-      try {
-        log('Loading Opus decoder from CDN...');
-        
-        // Dynamic import for ESM module
-        const module = await import('https://esm.sh/opus-decoder@0.7.7');
-        const OpusDecoder = module.OpusDecoder;
-        
-        log('Creating decoder instance...');
-        decoder = new OpusDecoder({ sampleRate: 16000, channels: 1 });
-        await decoder.ready;
-        decoderReady = true;
-        log('Opus decoder ready!', 'success');
-        
-        // Update UI
-        document.getElementById('decoderStatus').textContent = '✓ Ready';
-        document.getElementById('decoderStatus').style.color = '#4CAF50';
-      } catch (err) {
-        decoderError = err.message || String(err);
-        log(`Decoder init failed: ${decoderError}`, 'error');
-        
-        // Update UI
-        document.getElementById('decoderStatus').textContent = '✗ Failed';
-        document.getElementById('decoderStatus').style.color = '#f44336';
-      }
-    }
-    
-    // Start loading decoder immediately
-    initDecoder();
+    // No external decoder needed - using native Web Audio API + OGG container
+    document.getElementById('decoderStatus').textContent = '✓ Native';
+    document.getElementById('decoderStatus').style.color = '#4CAF50';
     
     // ============================================================
     // UI Elements
@@ -348,55 +318,167 @@
     }
     
     // ============================================================
-    // Opus Decoding (using opus-decoder WASM)
+    // Opus Decoding (Native Web Audio + OGG container)
     // ============================================================
     
     async function decodeOpusFrames() {
       // Initialize AudioContext
       if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
       }
       
-      // Check decoder state
-      if (decoderError) {
-        throw new Error(`Decoder failed to load: ${decoderError}`);
-      }
+      log(`Wrapping ${opusFrames.length} Opus frames in OGG container...`);
       
-      if (!decoderReady || !decoder) {
-        log('Waiting for decoder to be ready...');
-        // Wait up to 5 seconds for decoder
-        for (let i = 0; i < 50; i++) {
-          await new Promise(r => setTimeout(r, 100));
-          if (decoderReady && decoder) break;
-          if (decoderError) throw new Error(`Decoder failed: ${decoderError}`);
-        }
-        if (!decoderReady || !decoder) {
-          throw new Error('Decoder not ready after 5s timeout');
-        }
-      }
+      // Build OGG/Opus container from raw frames
+      const oggData = buildOggOpus(opusFrames, 16000, 1);
+      log(`OGG container: ${oggData.length} bytes`);
       
-      log(`Decoding ${opusFrames.length} Opus frames...`);
+      // Decode using native Web Audio API
+      const arrayBuffer = oggData.buffer.slice(
+        oggData.byteOffset,
+        oggData.byteOffset + oggData.byteLength
+      );
       
       try {
-        // Decode all frames using opus-decoder
-        const { channelData, samplesDecoded, sampleRate } = decoder.decodeFrames(opusFrames);
-        
-        log(`Decoded ${samplesDecoded} samples at ${sampleRate}Hz`);
-        
-        if (samplesDecoded === 0) {
-          throw new Error('No samples decoded - invalid Opus data?');
-        }
-        
-        // Create AudioBuffer from decoded PCM
-        lastAudioBuffer = audioContext.createBuffer(1, samplesDecoded, sampleRate);
-        lastAudioBuffer.copyToChannel(channelData[0], 0);
-        
-        // Reset decoder state for next recording
-        decoder.reset();
+        lastAudioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        log(`Decoded: ${lastAudioBuffer.duration.toFixed(2)}s @ ${lastAudioBuffer.sampleRate}Hz`);
       } catch (err) {
-        log(`Decode error details: ${err.stack || err}`, 'error');
+        log(`Native decode failed: ${err.message}`, 'error');
         throw err;
       }
+    }
+    
+    // ============================================================
+    // OGG/Opus Container Builder (RFC 7845)
+    // ============================================================
+    
+    function buildOggOpus(frames, sampleRate, channels) {
+      const pages = [];
+      let pageSequence = 0;
+      let granulePosition = 0;
+      
+      // Pre-skip: 312 samples for 16kHz (standard Opus encoder delay)
+      const preSkip = 312;
+      
+      // OpusHead packet (19 bytes)
+      const opusHead = new Uint8Array([
+        0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, // "OpusHead"
+        0x01,                                             // Version
+        channels,                                         // Channels
+        preSkip & 0xFF, (preSkip >> 8) & 0xFF,           // Pre-skip (LE)
+        sampleRate & 0xFF, (sampleRate >> 8) & 0xFF,     // Sample rate (LE)
+        (sampleRate >> 16) & 0xFF, (sampleRate >> 24) & 0xFF,
+        0x00, 0x00,                                       // Output gain
+        0x00                                              // Channel mapping
+      ]);
+      
+      // OpusTags packet
+      const vendor = 'tapir';
+      const opusTags = new Uint8Array(8 + 4 + vendor.length + 4);
+      const tagsView = new DataView(opusTags.buffer);
+      opusTags.set([0x4F, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73]); // "OpusTags"
+      tagsView.setUint32(8, vendor.length, true);
+      for (let i = 0; i < vendor.length; i++) {
+        opusTags[12 + i] = vendor.charCodeAt(i);
+      }
+      tagsView.setUint32(12 + vendor.length, 0, true); // 0 comments
+      
+      // Page 1: OpusHead (BOS)
+      pages.push(buildOggPage(opusHead, 0, pageSequence++, 0x02, true));
+      
+      // Page 2: OpusTags
+      pages.push(buildOggPage(opusTags, 0, pageSequence++, 0x00, false));
+      
+      // Audio pages - one frame per page for simplicity
+      const samplesPerFrame = 320; // 20ms at 16kHz
+      for (let i = 0; i < frames.length; i++) {
+        granulePosition += samplesPerFrame;
+        const isLast = i === frames.length - 1;
+        pages.push(buildOggPage(frames[i], granulePosition, pageSequence++, isLast ? 0x04 : 0x00, false));
+      }
+      
+      // Concatenate all pages
+      const totalSize = pages.reduce((sum, p) => sum + p.length, 0);
+      const result = new Uint8Array(totalSize);
+      let offset = 0;
+      for (const page of pages) {
+        result.set(page, offset);
+        offset += page.length;
+      }
+      
+      return result;
+    }
+    
+    function buildOggPage(data, granulePos, seqNum, flags, isBOS) {
+      // Calculate segment table
+      const segments = [];
+      let remaining = data.length;
+      while (remaining >= 255) {
+        segments.push(255);
+        remaining -= 255;
+      }
+      segments.push(remaining);
+      
+      const headerSize = 27 + segments.length;
+      const page = new Uint8Array(headerSize + data.length);
+      const view = new DataView(page.buffer);
+      
+      // Magic: "OggS"
+      page.set([0x4F, 0x67, 0x67, 0x53], 0);
+      
+      // Version
+      page[4] = 0;
+      
+      // Flags
+      page[5] = flags;
+      
+      // Granule position (64-bit LE)
+      view.setUint32(6, granulePos, true);
+      view.setUint32(10, 0, true); // High 32 bits
+      
+      // Serial number
+      view.setUint32(14, 0x54415049, true); // "TAPI" as serial
+      
+      // Page sequence
+      view.setUint32(18, seqNum, true);
+      
+      // CRC (placeholder, calculate after)
+      view.setUint32(22, 0, true);
+      
+      // Segment count
+      page[26] = segments.length;
+      
+      // Segment table
+      for (let i = 0; i < segments.length; i++) {
+        page[27 + i] = segments[i];
+      }
+      
+      // Data
+      page.set(data, headerSize);
+      
+      // Calculate and set CRC
+      const crc = oggCrc32(page);
+      view.setUint32(22, crc, true);
+      
+      return page;
+    }
+    
+    // OGG CRC-32 lookup table
+    const oggCrcTable = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let r = i << 24;
+      for (let j = 0; j < 8; j++) {
+        r = (r & 0x80000000) ? ((r << 1) ^ 0x04C11DB7) : (r << 1);
+      }
+      oggCrcTable[i] = r >>> 0;
+    }
+    
+    function oggCrc32(data) {
+      let crc = 0;
+      for (let i = 0; i < data.length; i++) {
+        crc = (oggCrcTable[((crc >>> 24) ^ data[i]) & 0xFF] ^ (crc << 8)) >>> 0;
+      }
+      return crc;
     }
     
     // ============================================================
