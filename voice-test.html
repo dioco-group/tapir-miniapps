@@ -200,9 +200,9 @@
     let lastAudioBuffer = null;
     let durationInterval = null;
     
-    // No external decoder needed - using native Web Audio API + OGG container
-    document.getElementById('decoderStatus').textContent = '✓ Native';
-    document.getElementById('decoderStatus').style.color = '#4CAF50';
+    // Decoder status - will be updated when opus-decoder loads
+    document.getElementById('decoderStatus').textContent = 'Loading...';
+    document.getElementById('decoderStatus').style.color = '#FF9800';
     
     // ============================================================
     // UI Elements
@@ -322,8 +322,33 @@
     }
     
     // ============================================================
-    // Opus Decoding (WebCodecs API - raw frames, no container!)
+    // Opus Decoding - using opus-decoder library (proven, simple)
     // ============================================================
+    
+    let opusDecoder = null;
+    
+    async function initOpusDecoder() {
+      if (opusDecoder) return;
+      
+      try {
+        log('Loading opus-decoder...');
+        // Use jsdelivr which handles ESM properly
+        const { OpusDecoder } = await import('https://cdn.jsdelivr.net/npm/opus-decoder@0.7.7/+esm');
+        opusDecoder = new OpusDecoder();
+        await opusDecoder.ready;
+        log('opus-decoder ready!', 'success');
+        document.getElementById('decoderStatus').textContent = '✓ Ready';
+        document.getElementById('decoderStatus').style.color = '#4CAF50';
+      } catch (err) {
+        log(`Decoder load failed: ${err.message}`, 'error');
+        document.getElementById('decoderStatus').textContent = '✗ ' + err.message;
+        document.getElementById('decoderStatus').style.color = '#f44336';
+        throw err;
+      }
+    }
+    
+    // Start loading decoder on page load
+    initOpusDecoder();
     
     async function decodeOpusFrames() {
       // Initialize AudioContext for playback
@@ -331,7 +356,7 @@
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
       }
       
-      log(`Decoding ${opusFrames.length} raw Opus frames with WebCodecs...`);
+      log(`Decoding ${opusFrames.length} Opus frames...`);
       
       // Log first frame info
       if (opusFrames.length > 0) {
@@ -339,96 +364,33 @@
         log(`First frame: ${f.length} bytes, TOC: 0x${f[0].toString(16)}`);
       }
       
-      // Check WebCodecs support
-      if (typeof AudioDecoder === 'undefined') {
-        log('WebCodecs not supported, falling back to OGG container', 'error');
-        return decodeWithOggFallback();
+      // Ensure decoder is ready
+      if (!opusDecoder) {
+        await initOpusDecoder();
       }
       
-      // Collect decoded PCM samples
-      const pcmChunks = [];
-      let totalSamples = 0;
-      
-      return new Promise((resolve, reject) => {
-        const decoder = new AudioDecoder({
-          output: (audioData) => {
-            // Extract PCM samples from AudioData
-            const samples = new Float32Array(audioData.numberOfFrames);
-            audioData.copyTo(samples, { planeIndex: 0 });
-            pcmChunks.push(samples);
-            totalSamples += audioData.numberOfFrames;
-            audioData.close();
-          },
-          error: (err) => {
-            log(`WebCodecs decode error: ${err.message}`, 'error');
-            reject(err);
-          }
-        });
+      try {
+        // Decode all frames at once
+        const { channelData, samplesDecoded, sampleRate } = opusDecoder.decodeFrames(opusFrames);
         
-        // Configure for Opus
-        decoder.configure({
-          codec: 'opus',
-          sampleRate: 48000, // Opus always decodes to 48kHz
-          numberOfChannels: 1
-        });
+        log(`Decoded ${samplesDecoded} samples at ${sampleRate}Hz`);
         
-        // Feed all frames
-        let timestamp = 0;
-        const frameDuration = 20000; // 20ms in microseconds
-        
-        for (const frame of opusFrames) {
-          decoder.decode(new EncodedAudioChunk({
-            type: 'key', // Opus frames are all keyframes
-            timestamp: timestamp,
-            data: frame
-          }));
-          timestamp += frameDuration;
+        if (samplesDecoded === 0) {
+          throw new Error('No samples decoded');
         }
         
-        // Flush and wait for completion
-        decoder.flush().then(() => {
-          decoder.close();
-          
-          if (totalSamples === 0) {
-            reject(new Error('No samples decoded'));
-            return;
-          }
-          
-          log(`Decoded ${totalSamples} samples (${(totalSamples / 48000).toFixed(2)}s)`);
-          
-          // Combine all chunks into one buffer
-          const combined = new Float32Array(totalSamples);
-          let offset = 0;
-          for (const chunk of pcmChunks) {
-            combined.set(chunk, offset);
-            offset += chunk.length;
-          }
-          
-          // Create AudioBuffer
-          lastAudioBuffer = audioContext.createBuffer(1, totalSamples, 48000);
-          lastAudioBuffer.copyToChannel(combined, 0);
-          
-          log(`Created AudioBuffer: ${lastAudioBuffer.duration.toFixed(2)}s`, 'success');
-          resolve();
-        }).catch(reject);
-      });
-    }
-    
-    // Fallback: OGG container method
-    async function decodeWithOggFallback() {
-      log('Using OGG container fallback...');
-      
-      const oggData = buildOggOpus(opusFrames, 16000, 1);
-      lastOggData = oggData;
-      downloadBtn.disabled = false;
-      
-      const arrayBuffer = oggData.buffer.slice(
-        oggData.byteOffset,
-        oggData.byteOffset + oggData.byteLength
-      );
-      
-      lastAudioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      log(`Decoded: ${lastAudioBuffer.duration.toFixed(2)}s`);
+        // Create AudioBuffer
+        lastAudioBuffer = audioContext.createBuffer(1, samplesDecoded, sampleRate);
+        lastAudioBuffer.copyToChannel(channelData[0], 0);
+        
+        log(`Created AudioBuffer: ${lastAudioBuffer.duration.toFixed(2)}s`, 'success');
+        
+        // Free decoder resources for next recording
+        opusDecoder.reset();
+      } catch (err) {
+        log(`Decode error: ${err.message}`, 'error');
+        throw err;
+      }
     }
     
     // ============================================================
